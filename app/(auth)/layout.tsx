@@ -12,7 +12,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             alt="LeadSweeper"
             width={200}
             height={100}
-            className="h-10 w-auto"
+            className="h-20 w-auto"
             priority
           />
           <p className="text-sm text-slate-500">UK property lead generation</p>
