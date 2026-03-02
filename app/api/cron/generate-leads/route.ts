@@ -4,7 +4,7 @@ import { generateLeadsForAllUsers } from '@/lib/leads/generator'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { sendLeadsReadyEmail } from '@/lib/email/resend'
 
-export const maxDuration = 300
+export const maxDuration = 60
 
 function verifyCronSecret(request: Request): boolean {
   const auth = request.headers.get('authorization')

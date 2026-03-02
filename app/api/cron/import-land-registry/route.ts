@@ -4,7 +4,7 @@ import { runImport } from '@/lib/land-registry/importer'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { sendAdminImportFailureAlert } from '@/lib/email/resend'
 
-export const maxDuration = 300
+export const maxDuration = 60
 
 function verifyCronSecret(request: Request): boolean {
   const auth = request.headers.get('authorization')
