@@ -1,17 +1,14 @@
 const POSTGRID_BASE = 'https://api.postgrid.com/print-mail/v1'
 
-export interface PostGridAddress {
-  addressLine1: string
-  city: string
-  postalOrZip: string
-  countryCode: 'GB'
-}
-
+// PostGrid contacts are flat — address fields live directly on the contact object
 export interface PostGridContact {
   firstName: string
   lastName?: string
   companyName?: string
-  address: PostGridAddress
+  addressLine1: string
+  city: string
+  postalOrZip: string
+  countryCode: 'GB'
 }
 
 interface CreateLetterResponse {
@@ -53,12 +50,10 @@ function getSenderContact(): PostGridContact {
   return {
     companyName: process.env.POSTGRID_SENDER_NAME ?? 'PropertyLeads',
     firstName: process.env.POSTGRID_SENDER_NAME ?? 'PropertyLeads',
-    address: {
-      addressLine1: process.env.POSTGRID_SENDER_ADDRESS_LINE1 ?? '1 Example Street',
-      city: process.env.POSTGRID_SENDER_CITY ?? 'London',
-      postalOrZip: process.env.POSTGRID_SENDER_POSTAL_CODE ?? 'EC1A 1BB',
-      countryCode: 'GB',
-    },
+    addressLine1: process.env.POSTGRID_SENDER_ADDRESS_LINE1 ?? '1 Example Street',
+    city: process.env.POSTGRID_SENDER_CITY ?? 'London',
+    postalOrZip: process.env.POSTGRID_SENDER_POSTAL_CODE ?? 'EC1A 1BB',
+    countryCode: 'GB',
   }
 }
 
@@ -76,12 +71,10 @@ export function buildRecipientContact(
   return {
     firstName,
     lastName: rest.join(' ') || undefined,
-    address: {
-      addressLine1: addressLine,
-      city: 'London', // Required by PostGrid even for UK addresses
-      postalOrZip: postcode,
-      countryCode: 'GB',
-    },
+    addressLine1: addressLine,
+    city: 'London', // Required by PostGrid even for UK addresses
+    postalOrZip: postcode,
+    countryCode: 'GB',
   }
 }
 
