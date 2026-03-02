@@ -115,7 +115,7 @@ export async function POST(request: Request) {
 
       const { letterId, status } = await sendLetter(recipient, htmlContent)
 
-      await adminSupabase.from('postcard_jobs').insert({
+      const { data: jobData } = await adminSupabase.from('postcard_jobs').insert({
         user_id: user.id,
         lead_id: lead.id,
         lead_month: month,
@@ -128,12 +128,12 @@ export async function POST(request: Request) {
         charge_amount_pence: isIncluded ? 0 : 100,
         status: 'dispatched',
         dispatched_at: new Date().toISOString(),
-      })
+      }).select('id').single()
 
-      // Link lead to job
-      await supabase
+      // Link lead to job so the UI shows "Dispatched"
+      await adminSupabase
         .from('leads')
-        .update({ selected_for_dispatch: true })
+        .update({ postcard_job_id: jobData?.id, selected_for_dispatch: true })
         .eq('id', lead.id)
 
       dispatched.push(lead.id as string)
