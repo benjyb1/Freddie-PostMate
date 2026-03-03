@@ -33,7 +33,7 @@ Automated UK property lead generation from HM Land Registry data with PostGrid p
 - [Stripe](https://stripe.com) account
 - [PostGrid](https://postgrid.com) account
 - [Resend](https://resend.com) account
-- [Vercel](https://vercel.com) **Pro** plan (for 300s cron functions)
+- [Vercel](https://vercel.com)
 
 ---
 
