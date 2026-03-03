@@ -51,8 +51,10 @@ This handles all subscription billing.
 
 **Steps:**
 1. New owner creates a Stripe account at [stripe.com](https://stripe.com)
-2. Existing customer subscriptions **cannot** be automatically migrated — contact Stripe support at [support.stripe.com](https://support.stripe.com) for a business transfer
-3. Update the Stripe keys in Vercel environment variables once the new account is ready
+2. Get the API keys from **Stripe → Developers → API keys**
+3. Update `STRIPE_SECRET_KEY` and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` in Vercel environment variables
+4. Set up a new webhook endpoint in **Stripe → Developers → Webhooks** pointing to `https://yourdomain.co.uk/api/webhooks/stripe`, then update `STRIPE_WEBHOOK_SECRET`
+5. Create a new subscription product in **Stripe → Products** and update `STRIPE_PRICE_ID`
 
 ---
 
