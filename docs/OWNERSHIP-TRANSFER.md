@@ -15,7 +15,7 @@ The source code lives here. The new owner needs their own GitHub account.
 3. Add the new owner's GitHub username with **Owner** role
 4. New owner accepts the invite
 5. Current owner transfers the repository: **Settings → General → scroll to Danger Zone → Transfer repository**
-
+Status: Invitation Sent
 ---
 
 ### 2. Vercel (website hosting)
@@ -32,7 +32,7 @@ This is where the website runs.
    - Go to **Project → Settings → Domains**
    - Add the domain
    - Update DNS records at the domain registrar to point to the new Vercel project
-
+Status: Waiting on Github
 ---
 
 ### 3. Supabase (database)
@@ -43,7 +43,7 @@ This stores all client data, leads, and postcard history.
 2. Current owner goes to [supabase.com/dashboard/org](https://supabase.com/dashboard/org) → **Members → Invite**
 3. Invite the new owner's email as **Owner**
 4. Once accepted, current owner can remove themselves
-
+Status: Invitation Sent
 ---
 
 ### 4. Stripe (payments)
@@ -51,8 +51,10 @@ This handles all subscription billing.
 
 **Steps:**
 1. New owner creates a Stripe account at [stripe.com](https://stripe.com)
-2. Existing customer subscriptions **cannot** be automatically migrated — contact Stripe support at [support.stripe.com](https://support.stripe.com) for a business transfer
-3. Update the Stripe keys in Vercel environment variables once the new account is ready
+2. Get the API keys from **Stripe → Developers → API keys**
+3. Update `STRIPE_SECRET_KEY` and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` in Vercel environment variables
+4. Set up a new webhook endpoint in **Stripe → Developers → Webhooks** pointing to `https://yourdomain.co.uk/api/webhooks/stripe`, then update `STRIPE_WEBHOOK_SECRET`
+5. Create a new subscription product in **Stripe → Products** and update `STRIPE_PRICE_ID`
 
 ---
 
@@ -84,12 +86,12 @@ The website's web address.
 1. Log in to the domain registrar (GoDaddy/Namecheap/etc.) where the domain was purchased
 2. Go to **Account → Domain Transfer** and follow the transfer process to the new owner's registrar account
 3. The DNS settings (pointing to Vercel) will need to be re-added after transfer
-
+Status: Obsolete
 ---
 
-## Environment variables to update in Vercel after transfer
+## Environment variables to add in Vercel after deployment
 
-Once all accounts are transferred, update these in **Vercel → Settings → Environment Variables**:
+Once all accounts are set up, add these in **Project → Settings → Environment Variables**:
 
 | Variable | Where to get the new value |
 |---|---|
