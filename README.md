@@ -1,4 +1,4 @@
-# HousePost
+# PropertyLeads
 
 Automated UK property lead generation from HM Land Registry data with PostGrid postcard dispatch. Built with Next.js 16, Supabase, Stripe, and PostGrid.
 
@@ -33,7 +33,7 @@ Automated UK property lead generation from HM Land Registry data with PostGrid p
 - [Stripe](https://stripe.com) account
 - [PostGrid](https://postgrid.com) account
 - [Resend](https://resend.com) account
-- [Vercel](https://vercel.com)
+- [Vercel](https://vercel.com) **Pro** plan (for 300s cron functions)
 
 ---
 
