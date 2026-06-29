@@ -9,11 +9,16 @@ import { toast } from 'sonner'
 import { Upload, Trash2, ImageIcon, Eye, Sparkles } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
-// Stannp prints A6 (148×105mm) — its default size and the closest match to the
-// old 6×4" card. Artwork is supplied at 154×111mm (A6 + 3mm bleed on every edge)
-// and Stannp trims 3mm off all round, so the design has to run past the trim;
-// whatever sits in that outer 3mm band gets cut away. Stannp prints the
-// recipient address itself, in a reserved "clear zone" on the back.
+// Stannp prints A6 (148×105mm). Artwork is supplied at 154×111mm (A6 + 3mm bleed
+// on every edge) and Stannp trims 3mm off all round, so the design must run past
+// the trim; whatever sits in that outer 3mm band gets cut away.
+//
+// FRONT: the design fills the whole card, edge to edge.
+// BACK:  Stannp prints the postage, recipient address and barcode over the RIGHT
+//        HALF of the card (measured from a live proof: it splits dead on the
+//        centre line). So the customer's back design only occupies the LEFT half.
+//        We crop their artwork to that left half and composite it onto a full A6
+//        card (right half left white) before sending.
 const CARD = {
   trimW: 148, // mm
   trimH: 105,
@@ -23,26 +28,24 @@ const CARD = {
 const DOC_W = CARD.trimW + CARD.bleed * 2 // 154mm — full artwork width incl. bleed
 const DOC_H = CARD.trimH + CARD.bleed * 2 // 111mm
 
-// Aspect of the crop frame: the full bleed doc when the artwork already carries
-// bleed, or the finished card when we synthesise the bleed for them.
-const ASPECT_BLEED = DOC_W / DOC_H // 154 / 111
-const ASPECT_TRIM = CARD.trimW / CARD.trimH // 148 / 105
-
-// On the back, Stannp prints the postage, recipient address and barcode over a
-// white panel covering the RIGHT HALF of the card, full height — measured from a
-// live proof: the panel starts dead on the card's centre line (77mm of 154mm)
-// and runs to all three outer edges. So the usable design area is the LEFT half;
-// keep the message and logo there. clearzone=true whites this half out, so any
-// artwork under it won't show.
+// Crop-frame aspect ratios. "full" = whole card; "back" = the left-half design
+// area (half the card width). With/without the bleed we add for the customer.
+const ASPECT = {
+  fullBleed: DOC_W / DOC_H, // 154 / 111
+  fullTrim: CARD.trimW / CARD.trimH, // 148 / 105
+  backBleed: DOC_W / 2 / DOC_H, // 77 / 111  (left half + outer bleed)
+  backTrim: CARD.trimW / 2 / CARD.trimH, // 74 / 105
+}
 
 // Stannp prints at 300 DPI. Below that an A6 card starts to look soft, so warn
 // before the customer commits a design that'll print blurry.
 const MIN_PRINT_DPI = 300
-// Target pixel size of the finished artwork at 300 DPI (154×111mm incl. bleed).
+// Finished artwork in pixels at 300 DPI: the whole card, and the left half.
 const TARGET_PX = {
-  w: Math.round((DOC_W / 25.4) * 300), // 1819
+  w: Math.round((DOC_W / 25.4) * 300), // 1819 — full card
   h: Math.round((DOC_H / 25.4) * 300), // 1311
 }
+const HALF_PX_W = Math.round(TARGET_PX.w / 2) // 910 — left (design) half
 
 type Side = 'front' | 'back'
 
@@ -51,78 +54,84 @@ const SIDE_CONFIG = {
   back: { fileBase: 'design-back', settingsKey: 'postcard_design_back_url', label: 'Back' },
 } as const
 
-/** Frame geometry for the active mode: where the trim sits and the frame size. */
-function geom(addBleed: boolean) {
-  return {
-    trimOff: addBleed ? 0 : CARD.bleed, // mm from frame edge to the cut line
-    frameW: addBleed ? CARD.trimW : DOC_W,
-    frameH: addBleed ? CARD.trimH : DOC_H,
-  }
-}
 const pct = (mm: number, frameMm: number) => (mm / frameMm) * 100
 
-/** Red dashed rectangle on the cut line, with the bleed band dimmed outside it. */
-function CutGuide({ x, y, dim = true }: { x: number; y: number; dim?: boolean }) {
+/**
+ * Dashed guide insets (% per edge) for a crop frame. `kind` is the whole card or
+ * the back's left-half design area, whose RIGHT edge is the card centre — not a
+ * cut — so it stays flush.
+ */
+function guideInsets(kind: 'full' | 'back', addBleed: boolean) {
+  const off = addBleed ? 0 : CARD.bleed
+  const frameW = kind === 'full' ? (addBleed ? CARD.trimW : DOC_W) : addBleed ? CARD.trimW / 2 : DOC_W / 2
+  const frameH = addBleed ? CARD.trimH : DOC_H
+  const rightFlush = kind === 'back'
+  return {
+    cut: { l: pct(off, frameW), r: rightFlush ? 0 : pct(off, frameW), t: pct(off, frameH), b: pct(off, frameH) },
+    safe: {
+      l: pct(off + CARD.safe, frameW),
+      r: rightFlush ? 0 : pct(off + CARD.safe, frameW),
+      t: pct(off + CARD.safe, frameH),
+      b: pct(off + CARD.safe, frameH),
+    },
+  }
+}
+
+type Insets = { l: number; r: number; t: number; b: number }
+
+/** A dashed rectangle (red cut line or blue safe line) at the given edge insets. */
+function GuideBox({ insets, variant }: { insets: Insets; variant: 'cut' | 'safe' }) {
+  const cut = variant === 'cut'
   return (
     <div
-      className="pointer-events-none absolute rounded-[1px] border border-dashed border-red-500/90"
+      className="pointer-events-none absolute rounded-[1px] border border-dashed"
       style={{
-        top: `${y}%`,
-        bottom: `${y}%`,
-        left: `${x}%`,
-        right: `${x}%`,
-        ...(dim ? { boxShadow: '0 0 0 9999px rgba(15,23,42,0.20)' } : {}),
+        left: `${insets.l}%`,
+        right: `${insets.r}%`,
+        top: `${insets.t}%`,
+        bottom: `${insets.b}%`,
+        borderColor: cut ? 'rgba(239,68,68,0.9)' : 'rgba(37,99,235,0.9)',
+        ...(cut ? { boxShadow: '0 0 0 9999px rgba(15,23,42,0.20)' } : {}),
       }}
     />
   )
 }
 
-/** Blue dashed safe zone — keep important text and logos inside it. */
-function SafeGuide({ x, y }: { x: number; y: number }) {
+/** Cut + safe guides for whichever frame is showing. */
+function Guides({ kind, addBleed }: { kind: 'full' | 'back'; addBleed: boolean }) {
+  const { cut, safe } = guideInsets(kind, addBleed)
   return (
-    <div
-      className="pointer-events-none absolute rounded-[1px] border border-dashed"
-      style={{ top: `${y}%`, bottom: `${y}%`, left: `${x}%`, right: `${x}%`, borderColor: 'rgba(37,99,235,0.9)' }}
-    />
+    <>
+      {!addBleed && <GuideBox insets={cut} variant="cut" />}
+      <GuideBox insets={safe} variant="safe" />
+    </>
   )
 }
 
 /**
- * Amber hatched panel marking the right half of the back, where Stannp prints
- * the postage, address and barcode over white. `left` is the panel's left edge
- * as a % of the frame (the card centre line); it runs to the other three edges.
+ * The address half of the back, shown next to the design so it's obvious the
+ * design only occupies the left half. Stannp prints the real address + postage
+ * here over a white panel.
  */
-function ClearZoneGuide({ left }: { left: number }) {
+function AddressHalf() {
   return (
-    <div
-      className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-center border-l border-dashed border-amber-500"
-      style={{
-        left: `${left}%`,
-        background:
-          'repeating-linear-gradient(45deg, rgba(245,158,11,0.16) 0, rgba(245,158,11,0.16) 7px, transparent 7px, transparent 14px)',
-      }}
-    >
-      <span className="rounded bg-amber-500/90 px-1.5 py-0.5 text-center text-[8px] font-medium uppercase leading-tight tracking-wide text-white">
-        Address &amp; postage<br />printed here
-      </span>
+    <div className="relative flex w-1/2 flex-col justify-between border-l-2 border-dashed border-amber-400 bg-amber-50/50 p-3">
+      <div className="flex justify-end">
+        <div className="flex h-9 w-7 items-center justify-center rounded-sm border-2 border-dashed border-slate-300 text-[7px] font-medium text-slate-400">
+          STAMP
+        </div>
+      </div>
+      <div className="space-y-0.5 text-[10px] leading-tight text-slate-500">
+        <p>Mr A. Homeowner</p>
+        <p>1 Example Street</p>
+        <p>Sometown</p>
+        <p>AB12 3CD</p>
+        <div className="mt-1 h-3 w-20 bg-[repeating-linear-gradient(90deg,#94a3b8_0,#94a3b8_2px,transparent_2px,transparent_4px)]" />
+      </div>
+      <p className="text-[8px] font-medium uppercase tracking-wide text-amber-600">
+        Address &amp; postage · added by Stannp
+      </p>
     </div>
-  )
-}
-
-/** All overlays for one frame, given the mode and side. */
-function GuideOverlay({ side, addBleed, showSafe = true }: { side: Side; addBleed: boolean; showSafe?: boolean }) {
-  const g = geom(addBleed)
-  const cut = { x: pct(g.trimOff, g.frameW), y: pct(g.trimOff, g.frameH) }
-  const safe = { x: pct(g.trimOff + CARD.safe, g.frameW), y: pct(g.trimOff + CARD.safe, g.frameH) }
-  // The address panel starts at the card's centre line (= 50% in either frame).
-  const addressLeft = pct(g.trimOff + CARD.trimW / 2, g.frameW)
-  return (
-    <>
-      {/* In add-bleed mode the frame edge IS the cut, so only show the safe line. */}
-      {!addBleed && <CutGuide x={cut.x} y={cut.y} />}
-      {showSafe && <SafeGuide x={safe.x} y={safe.y} />}
-      {side === 'back' && <ClearZoneGuide left={addressLeft} />}
-    </>
   )
 }
 
@@ -130,74 +139,90 @@ function isPdfUrl(url: string) {
   return /\.pdf(\?|$)/i.test(url)
 }
 
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
+
 function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob)
-      else reject(new Error('Failed to create blob'))
-    }, 'image/png')
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Failed to create blob'))), 'image/png')
   })
 }
 
 /**
- * Crop the rendered design to the chosen area and return a PNG.
- *
- * When `addBleed` is set, the crop area is the FINISHED A6 card and we synthesise
- * the 3mm bleed on all four edges by replicating the edge pixels outward — for
- * customers who upload artwork without bleed. The bleed band is trimmed off, so
- * the stretched edge never shows; it just stops a white sliver appearing if the
- * cut drifts.
+ * Crop the chosen area to a canvas, optionally synthesising the 3mm bleed by
+ * replicating edge pixels outward (for artwork that doesn't already include it).
+ * `rightIsCut` is false for the back's left-half design — its right edge is the
+ * card centre, which is never cut, so it gets no bleed there.
  */
-async function getCroppedImg(imageSrc: string, cropArea: Area, addBleed: boolean): Promise<Blob> {
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve(img)
-    img.onerror = reject
-    img.src = imageSrc
-  })
-
+function cropWithBleed(image: HTMLImageElement, cropArea: Area, addBleed: boolean, rightIsCut: boolean, trimWmm: number): HTMLCanvasElement {
   const cw = Math.round(cropArea.width)
   const ch = Math.round(cropArea.height)
 
   if (!addBleed) {
-    const canvas = document.createElement('canvas')
-    canvas.width = cw
-    canvas.height = ch
-    const ctx = canvas.getContext('2d')!
-    ctx.drawImage(image, cropArea.x, cropArea.y, cropArea.width, cropArea.height, 0, 0, cw, ch)
-    return canvasToBlob(canvas)
+    const c = document.createElement('canvas')
+    c.width = cw
+    c.height = ch
+    c.getContext('2d')!.drawImage(image, cropArea.x, cropArea.y, cropArea.width, cropArea.height, 0, 0, cw, ch)
+    return c
   }
 
-  // Bleed in pixels, scaled from the cropped trim region.
-  const bx = Math.max(1, Math.round((cw * CARD.bleed) / CARD.trimW))
+  const bx = Math.max(1, Math.round((cw * CARD.bleed) / trimWmm))
   const by = Math.max(1, Math.round((ch * CARD.bleed) / CARD.trimH))
+  const rb = rightIsCut ? bx : 0
 
   const canvas = document.createElement('canvas')
-  canvas.width = cw + bx * 2
+  canvas.width = cw + bx + rb
   canvas.height = ch + by * 2
   const ctx = canvas.getContext('2d')!
 
-  // Finished artwork in the middle, offset by the bleed.
   ctx.drawImage(image, cropArea.x, cropArea.y, cropArea.width, cropArea.height, bx, by, cw, ch)
-
-  // Replicate the outer rows/columns of the artwork into each margin + corner.
   ctx.drawImage(canvas, bx, by, 1, ch, 0, by, bx, ch) // left
-  ctx.drawImage(canvas, bx + cw - 1, by, 1, ch, bx + cw, by, bx, ch) // right
   ctx.drawImage(canvas, bx, by, cw, 1, bx, 0, cw, by) // top
   ctx.drawImage(canvas, bx, by + ch - 1, cw, 1, bx, by + ch, cw, by) // bottom
   ctx.drawImage(canvas, bx, by, 1, 1, 0, 0, bx, by) // top-left
-  ctx.drawImage(canvas, bx + cw - 1, by, 1, 1, bx + cw, 0, bx, by) // top-right
   ctx.drawImage(canvas, bx, by + ch - 1, 1, 1, 0, by + ch, bx, by) // bottom-left
-  ctx.drawImage(canvas, bx + cw - 1, by + ch - 1, 1, 1, bx + cw, by + ch, bx, by) // bottom-right
+  if (rb) {
+    ctx.drawImage(canvas, bx + cw - 1, by, 1, ch, bx + cw, by, rb, ch) // right
+    ctx.drawImage(canvas, bx + cw - 1, by, 1, 1, bx + cw, 0, rb, by) // top-right
+    ctx.drawImage(canvas, bx + cw - 1, by + ch - 1, 1, 1, bx + cw, by + ch, rb, by) // bottom-right
+  }
+  return canvas
+}
 
-  return canvasToBlob(canvas)
+/**
+ * Produce the final artwork PNG for a side. The front is the cropped card. The
+ * back is the cropped LEFT half composited onto a full A6 card with a white
+ * right half — the area Stannp fills with the address.
+ */
+async function getCroppedImg(imageSrc: string, cropArea: Area, addBleed: boolean, side: Side): Promise<Blob> {
+  const image = await loadImage(imageSrc)
+  const rightIsCut = side === 'front'
+  const trimWmm = side === 'front' ? CARD.trimW : CARD.trimW / 2
+  const cropped = cropWithBleed(image, cropArea, addBleed, rightIsCut, trimWmm)
+
+  if (side === 'front') return canvasToBlob(cropped)
+
+  // Back: design on the left half, white right half for the address.
+  const full = document.createElement('canvas')
+  full.width = TARGET_PX.w
+  full.height = TARGET_PX.h
+  const ctx = full.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, full.width, full.height)
+  ctx.drawImage(cropped, 0, 0, cropped.width, cropped.height, 0, 0, HALF_PX_W, TARGET_PX.h)
+  return canvasToBlob(full)
 }
 
 export default function PostcardDesignPage() {
   const supabase = createClient()
   const frontFileInputRef = useRef<HTMLInputElement>(null)
   const backFileInputRef = useRef<HTMLInputElement>(null)
-  // The original uploaded PDF per side, kept for the lossless "send as-is" path.
   const frontOriginalFile = useRef<File | null>(null)
   const backOriginalFile = useRef<File | null>(null)
 
@@ -210,6 +235,7 @@ export default function PostcardDesignPage() {
   const [frontCrop, setFrontCrop] = useState({ x: 0, y: 0 })
   const [frontZoom, setFrontZoom] = useState(1)
   const [frontCroppedAreaPixels, setFrontCroppedAreaPixels] = useState<Area | null>(null)
+  const [frontImageAspect, setFrontImageAspect] = useState<number | null>(null)
 
   // Back side state
   const [backDesignUrl, setBackDesignUrl] = useState<string | null>(null)
@@ -217,19 +243,15 @@ export default function PostcardDesignPage() {
   const [backCrop, setBackCrop] = useState({ x: 0, y: 0 })
   const [backZoom, setBackZoom] = useState(1)
   const [backCroppedAreaPixels, setBackCroppedAreaPixels] = useState<Area | null>(null)
+  const [backImageAspect, setBackImageAspect] = useState<number | null>(null)
 
-  // Whether to synthesise bleed for the customer, per side.
   const [frontAddBleed, setFrontAddBleed] = useState(false)
   const [backAddBleed, setBackAddBleed] = useState(false)
-
-  // Lossless path: send the original print-ready PDF as-is (no rasterising).
   const [frontPassthrough, setFrontPassthrough] = useState(false)
   const [backPassthrough, setBackPassthrough] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [rendering, setRendering] = useState(false)
-
-  // Exact-print proof (Stannp test-mode render)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
@@ -245,6 +267,8 @@ export default function PostcardDesignPage() {
   const setZoom = isFront ? setFrontZoom : setBackZoom
   const croppedAreaPixels = isFront ? frontCroppedAreaPixels : backCroppedAreaPixels
   const setCroppedAreaPixels = isFront ? setFrontCroppedAreaPixels : setBackCroppedAreaPixels
+  const imageAspect = isFront ? frontImageAspect : backImageAspect
+  const setImageAspect = isFront ? setFrontImageAspect : setBackImageAspect
   const fileInputRef = isFront ? frontFileInputRef : backFileInputRef
   const originalFileRef = isFront ? frontOriginalFile : backOriginalFile
   const config = SIDE_CONFIG[activeSide]
@@ -255,25 +279,30 @@ export default function PostcardDesignPage() {
 
   const bothSaved = Boolean(frontDesignUrl && backDesignUrl)
 
-  // Crop frame: the bleed doc when the design already has bleed, or the finished
-  // card when we're adding it. (Front and back share the same A6 frame now —
-  // Stannp stamps the address itself rather than reserving half the back.)
-  const cropAspect = addBleed ? ASPECT_TRIM : ASPECT_BLEED
+  // Crop frame for the active side: full card (front) or left half (back), with
+  // or without the bleed we add. The back container is always a full card (the
+  // cropper takes its left half, the address half sits to the right).
+  const cropAspect = isFront
+    ? addBleed ? ASPECT.fullTrim : ASPECT.fullBleed
+    : addBleed ? ASPECT.backTrim : ASPECT.backBleed
+  const backContainerAspect = addBleed ? ASPECT.fullTrim : ASPECT.fullBleed
 
-  // Roughly how many DPI the cropped artwork will print at. The crop frame spans
-  // this many mm across, so dividing the cropped pixel width by it gives DPI.
-  const cropFrameMm = addBleed ? CARD.trimW : DOC_W
-  const effectiveDpi = croppedAreaPixels
-    ? Math.round(croppedAreaPixels.width / (cropFrameMm / 25.4))
-    : null
+  // DPI of the cropped artwork. The crop frame spans this many mm across.
+  const cropFrameMm = isFront ? (addBleed ? CARD.trimW : DOC_W) : addBleed ? CARD.trimW / 2 : DOC_W / 2
+  const effectiveDpi = croppedAreaPixels ? Math.round(croppedAreaPixels.width / (cropFrameMm / 25.4)) : null
   const lowRes = !passthrough && effectiveDpi != null && effectiveDpi < MIN_PRINT_DPI
+
+  // Warn when the uploaded file's orientation is wrong for this side — it'll be
+  // heavily cropped. Front wants landscape, the back's design half wants portrait.
+  const targetPortrait = !isFront
+  const uploadPortrait = imageAspect != null && imageAspect < 1
+  const wrongShape = !passthrough && imageAspect != null && uploadPortrait !== targetPortrait
 
   useEffect(() => {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
       setUserId(user.id)
-
       const res = await fetch('/api/settings')
       const { profile } = await res.json()
       setFrontDesignUrl(profile?.postcard_design_url ?? null)
@@ -313,9 +342,8 @@ export default function PostcardDesignPage() {
         const page = await pdf.getPage(1)
 
         // Render at ~400 DPI so the cropped print is sharp with headroom above
-        // Stannp's 300 DPI. pdf.js scale 1 ≈ 72 DPI, so 400 DPI needs scale ≈ 5.56.
-        // Cap the long edge so an oversized PDF doesn't blow up the canvas/upload —
-        // 6.06" (154mm) at 400 DPI is ~2425px, well under the cap.
+        // Stannp's 300 DPI. Cap the long edge so an oversized PDF doesn't blow up
+        // the canvas/upload.
         const base = page.getViewport({ scale: 1 })
         const MAX_EDGE = 3200
         let scale = 400 / 72
@@ -326,19 +354,16 @@ export default function PostcardDesignPage() {
         const canvas = document.createElement('canvas')
         canvas.width = viewport.width
         canvas.height = viewport.height
-
         await page.render({ canvas, viewport }).promise
+        setImageAspect(viewport.width / viewport.height)
         return canvas.toDataURL('image/png')
       }
 
-      // The pdf.js worker loads from a CDN; if it ever fails or the network
-      // stalls, getDocument() never resolves. Race a timeout so the uploader
-      // surfaces an error instead of sitting on "Rendering…" forever.
+      // The PDF worker can stall; race a timeout so the uploader surfaces an
+      // error instead of sitting on "Rendering…" forever.
       const dataUrl = await Promise.race([
         renderPdf(),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('PDF render timed out')), 25_000)
-        ),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('PDF render timed out')), 25_000)),
       ])
       setImageSrc(dataUrl)
     } catch (err) {
@@ -350,7 +375,6 @@ export default function PostcardDesignPage() {
       )
     } finally {
       setRendering(false)
-      // Reset the input so the same file can be re-selected
       e.target.value = ''
     }
   }
@@ -362,29 +386,20 @@ export default function PostcardDesignPage() {
     setLoading(true)
 
     try {
-      // Lossless path: upload the original PDF untouched so Stannp prints from the
-      // vector source. Otherwise rasterise the crop (with optional synthesised
-      // bleed) to a high-resolution PNG.
       const ext = passthrough ? 'pdf' : 'png'
       const contentType = passthrough ? 'application/pdf' : 'image/png'
       const blob: Blob = passthrough
         ? originalFileRef.current!
-        : await getCroppedImg(imageSrc, croppedAreaPixels!, addBleed)
+        : await getCroppedImg(imageSrc, croppedAreaPixels!, addBleed, activeSide)
 
       const path = `${userId}/${config.fileBase}.${ext}`
       const { error: uploadError } = await supabase.storage
         .from('postcard-designs')
         .upload(path, blob, { upsert: true, contentType })
-
       if (uploadError) throw uploadError
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('postcard-designs')
-        .getPublicUrl(path)
-
-      // The storage path is fixed per side, so the public URL never changes and
-      // Supabase's CDN (and Stannp, and the browser) would keep serving the old
-      // file. Append a version so everyone fetches the new artwork straight away.
+      const { data: { publicUrl } } = supabase.storage.from('postcard-designs').getPublicUrl(path)
+      // Fixed path → cache-bust so the CDN/browser/Stannp fetch the new file.
       const versionedUrl = `${publicUrl}?v=${Date.now()}`
 
       const res = await fetch('/api/settings', {
@@ -392,7 +407,6 @@ export default function PostcardDesignPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [config.settingsKey]: versionedUrl }),
       })
-
       if (!res.ok) {
         const { error } = await res.json()
         throw new Error(error ?? 'Failed to save')
@@ -409,11 +423,7 @@ export default function PostcardDesignPage() {
     }
   }
 
-  /**
-   * Render an exact print proof through Stannp's test mode. Nothing is printed,
-   * posted or charged — it returns the same PDF the printer would use. Needs both
-   * sides saved, since Stannp builds the whole card at once.
-   */
+  /** Render an exact print proof through Stannp's test mode (nothing posted/charged). */
   async function handlePreview() {
     setPreviewLoading(true)
     try {
@@ -431,19 +441,15 @@ export default function PostcardDesignPage() {
   async function handleRemove() {
     if (!userId) return
     setLoading(true)
-
     try {
-      // Remove whichever format is on disk (PNG crop or passthrough PDF).
       await supabase.storage
         .from('postcard-designs')
         .remove([`${userId}/${config.fileBase}.png`, `${userId}/${config.fileBase}.pdf`])
-
       await fetch('/api/settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [config.settingsKey]: null }),
       })
-
       setCurrentDesignUrl(null)
       setImageSrc(null)
       setPreviewUrl(null)
@@ -459,16 +465,22 @@ export default function PostcardDesignPage() {
     setImageSrc(null)
     setCrop({ x: 0, y: 0 })
     setZoom(1)
+    setImageAspect(null)
     originalFileRef.current = null
   }
+
+  // Per-side "design at this size" guidance.
+  const sizeHint = isFront
+    ? `Landscape · 154×111mm · ${TARGET_PX.w}×${TARGET_PX.h}px @ 300 DPI`
+    : `Portrait (left half) · 77×111mm · ${HALF_PX_W}×${TARGET_PX.h}px @ 300 DPI`
 
   return (
     <div className="max-w-6xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Postcard Design</h1>
         <p className="text-sm text-slate-500">
-          Upload your front and back artwork as PDFs. Cards print A6 (148×105mm) on 300gsm.
-          Design at 154×111mm so there&apos;s 3mm of bleed to trim — or upload a print-ready PDF and send it untouched.
+          Upload your front and back artwork as PDFs. Cards print A6 (148×105mm) on 300gsm, with 3mm of bleed.
+          The front fills the whole card; the back design sits on the left half, with the address on the right.
         </p>
       </div>
 
@@ -495,7 +507,6 @@ export default function PostcardDesignPage() {
         })}
       </div>
 
-      {/* Design preview (left) and upload / crop tools (right), side by side. */}
       <div className="grid items-start gap-6 lg:grid-cols-2">
         {/* Current saved design preview */}
         {currentDesignUrl && (
@@ -504,7 +515,7 @@ export default function PostcardDesignPage() {
               <CardTitle>{config.label} Design</CardTitle>
               <CardDescription>
                 Red dashed line is the cut; anything outside it is trimmed off.
-                {!isFront && ' The amber right half is where Stannp prints the address.'}
+                {!isFront && ' The right half is where Stannp prints the address.'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -517,9 +528,18 @@ export default function PostcardDesignPage() {
                 ) : (
                   <img src={currentDesignUrl} alt={`Current postcard ${activeSide} design`} className="h-full w-full object-cover" />
                 )}
-                {/* Guides only line up on rasterised designs; a passthrough PDF is
-                    verified through the exact proof below instead. */}
-                {!isPdfUrl(currentDesignUrl) && <GuideOverlay side={activeSide} addBleed={false} showSafe={false} />}
+                {!isPdfUrl(currentDesignUrl) && (
+                  <>
+                    <GuideBox insets={guideInsets('full', false).cut} variant="cut" />
+                    {!isFront && (
+                      <div className="pointer-events-none absolute inset-y-0 right-0 left-1/2 flex items-center justify-center border-l border-dashed border-amber-400 bg-amber-50/25">
+                        <span className="rounded bg-amber-500/90 px-1.5 py-0.5 text-center text-[8px] font-medium uppercase leading-tight tracking-wide text-white">
+                          Address &amp; postage
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
               <Button variant="outline" size="sm" onClick={handleRemove} disabled={loading}>
                 <Trash2 className="mr-2 h-4 w-4" />
@@ -536,8 +556,11 @@ export default function PostcardDesignPage() {
             <CardDescription>
               {isFront
                 ? 'The front is your full design, edge to edge.'
-                : 'Design the full card, but keep your message and logo in the LEFT half — Stannp prints the address over the amber right half, covered by a white panel.'}
+                : 'Your back design sits on the left half. The right half is reserved for the address and postage.'}
             </CardDescription>
+            <p className="mt-1 inline-flex w-fit rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+              Design at: {sizeHint}
+            </p>
           </CardHeader>
           <CardContent className="space-y-4">
             <input ref={frontFileInputRef} type="file" accept="application/pdf" className="hidden" onChange={handleFileChange} />
@@ -571,79 +594,90 @@ export default function PostcardDesignPage() {
                   /* Lossless: show the rendered page with guides, no crop. */
                   <div
                     className="relative mx-auto w-full overflow-hidden rounded-md border border-slate-200 bg-white"
-                    style={{ aspectRatio: `${ASPECT_BLEED}`, maxWidth: 560 }}
+                    style={{ aspectRatio: `${ASPECT.fullBleed}`, maxWidth: 560 }}
                   >
                     <img src={imageSrc} alt="Print-ready artwork" className="h-full w-full object-contain" />
-                    <GuideOverlay side={activeSide} addBleed={false} />
+                    <GuideBox insets={guideInsets('full', false).cut} variant="cut" />
+                    <GuideBox insets={guideInsets('full', false).safe} variant="safe" />
+                    {!isFront && (
+                      <div className="pointer-events-none absolute inset-y-0 left-1/2 right-0 border-l border-dashed border-amber-400 bg-amber-50/20" />
+                    )}
                   </div>
-                ) : (
-                  /* Crop the whole card; the overlay shows the cut, safe zone and
-                     (on the back) the address area. */
+                ) : isFront ? (
+                  /* Front — crop the whole card. */
                   <div
                     className="relative mx-auto w-full overflow-hidden rounded-md border border-slate-200"
                     style={{ aspectRatio: `${cropAspect}`, maxWidth: 560 }}
                   >
-                    <Cropper
-                      image={imageSrc}
-                      crop={crop}
-                      zoom={zoom}
-                      aspect={cropAspect}
-                      onCropChange={setCrop}
-                      onZoomChange={setZoom}
-                      onCropComplete={onCropComplete}
-                    />
-                    <GuideOverlay side={activeSide} addBleed={addBleed} />
+                    <Cropper image={imageSrc} crop={crop} zoom={zoom} aspect={cropAspect} objectFit="cover"
+                      onCropChange={setCrop} onZoomChange={setZoom} onCropComplete={onCropComplete} />
+                    <Guides kind="full" addBleed={addBleed} />
+                  </div>
+                ) : (
+                  /* Back — crop into the LEFT half; the address half sits beside it. */
+                  <div className="w-full">
+                    <div
+                      className="mx-auto flex overflow-hidden rounded-md border border-slate-200 bg-white"
+                      style={{ aspectRatio: `${backContainerAspect}`, maxWidth: 560 }}
+                    >
+                      <div className="relative w-1/2">
+                        <Cropper image={imageSrc} crop={crop} zoom={zoom} aspect={cropAspect} objectFit="cover"
+                          onCropChange={setCrop} onZoomChange={setZoom} onCropComplete={onCropComplete} />
+                        <Guides kind="back" addBleed={addBleed} />
+                      </div>
+                      <AddressHalf />
+                    </div>
+                    <p className="mt-2 text-center text-xs text-slate-500">
+                      Drag and zoom to frame your design in the left half.
+                    </p>
                   </div>
                 )}
 
-                {/* Lossless passthrough toggle — the quality-first path. */}
+                {/* Wrong-orientation hint */}
+                {wrongShape && (
+                  <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                    Your file looks {uploadPortrait ? 'portrait' : 'landscape'}, but the {activeSide}{' '}
+                    {isFront ? 'is landscape (wider than tall)' : 'design half is portrait (taller than wide)'}. It&apos;ll
+                    be cropped to fit — for a clean result, upload artwork sized {sizeHint.split(' · ')[1]}.
+                  </div>
+                )}
+
+                {/* Lossless passthrough toggle */}
                 <label className="flex items-start gap-2 rounded-md border border-indigo-100 bg-indigo-50/60 p-3 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={passthrough}
-                    onChange={(e) => setPassthrough(e.target.checked)}
-                    className="mt-0.5 h-4 w-4"
-                  />
+                  <input type="checkbox" checked={passthrough} onChange={(e) => setPassthrough(e.target.checked)} className="mt-0.5 h-4 w-4" />
                   <span>
                     <span className="flex items-center gap-1.5 font-medium text-indigo-900">
                       <Sparkles className="h-3.5 w-3.5" /> Send my PDF as-is — maximum quality
                     </span>
                     <span className="mt-0.5 block text-xs text-indigo-700/80">
-                      Skips cropping and rasterising — Stannp prints straight from your vector PDF, so there&apos;s zero
-                      quality loss. Use this when your file is already A6 with 3mm bleed (154×111mm).
+                      Skips cropping and rasterising — Stannp prints straight from your vector PDF, zero quality loss.{' '}
+                      {isFront
+                        ? 'Use when your file is already a full A6 card, 154×111mm with 3mm bleed.'
+                        : 'Use when your file is already a full A6 back (154×111mm, 3mm bleed) with the right half kept clear for the address.'}
                     </span>
                   </span>
                 </label>
 
                 {!passthrough && (
                   <>
-                    {/* Add-bleed helper — for designs that don't already include bleed */}
+                    {/* Add-bleed helper */}
                     <label className="flex items-start gap-2 rounded-md bg-slate-50 p-3 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={addBleed}
-                        onChange={(e) => setAddBleed(e.target.checked)}
-                        className="mt-0.5 h-4 w-4"
-                      />
+                      <input type="checkbox" checked={addBleed} onChange={(e) => setAddBleed(e.target.checked)} className="mt-0.5 h-4 w-4" />
                       <span>
                         <span className="font-medium text-slate-700">My design doesn&apos;t include bleed — add it for me</span>
                         <span className="mt-0.5 block text-xs text-slate-500">
-                          Tick this if your artwork is exactly the finished A6 size (148×105mm). We&apos;ll extend the
-                          edges by 3mm so no white shows after trimming. Leave it off if you already designed at
-                          154×111mm with bleed.
+                          Tick this if your artwork is exactly the finished size with no bleed. We&apos;ll extend the
+                          edges by 3mm so no white shows after trimming.
                         </span>
                       </span>
                     </label>
 
-                    {/* Guide legend */}
                     <p className="text-xs text-slate-500">
                       {addBleed
                         ? 'Blue line is the safe zone — keep text and logos inside it.'
                         : 'Red line is the cut. Let the background run to the outer edge; keep text inside the blue safe line.'}
-                      {!isFront && ' Keep your content in the left half — the amber right half becomes the address panel.'}
                     </p>
 
-                    {/* Low-resolution warning */}
                     {lowRes && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                         This crop is about {effectiveDpi} DPI, below the {MIN_PRINT_DPI} DPI Stannp prints at — it may
@@ -651,32 +685,17 @@ export default function PostcardDesignPage() {
                       </div>
                     )}
 
-                    {/* Zoom slider */}
                     <div className="flex items-center gap-3">
                       <span className="w-10 text-xs text-slate-500">Zoom</span>
-                      <input
-                        type="range"
-                        min={1}
-                        max={3}
-                        step={0.01}
-                        value={zoom}
-                        onChange={(e) => setZoom(Number(e.target.value))}
-                        className="flex-1"
-                      />
+                      <input type="range" min={1} max={3} step={0.01} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} className="flex-1" />
                     </div>
                   </>
                 )}
 
                 <div className="flex flex-wrap gap-3">
-                  <Button onClick={handleSave} disabled={loading}>
-                    {loading ? 'Saving...' : 'Save Design'}
-                  </Button>
-                  <Button variant="outline" onClick={cancelEdit} disabled={loading}>
-                    Cancel
-                  </Button>
-                  <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={loading}>
-                    Choose different file
-                  </Button>
+                  <Button onClick={handleSave} disabled={loading}>{loading ? 'Saving...' : 'Save Design'}</Button>
+                  <Button variant="outline" onClick={cancelEdit} disabled={loading}>Cancel</Button>
+                  <Button variant="ghost" onClick={() => fileInputRef.current?.click()} disabled={loading}>Choose different file</Button>
                 </div>
               </>
             )}
@@ -684,7 +703,7 @@ export default function PostcardDesignPage() {
         </Card>
       </div>
 
-      {/* Exact print proof — the whole card, straight from Stannp. */}
+      {/* Exact print proof */}
       <Card className="border-slate-200">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -700,9 +719,7 @@ export default function PostcardDesignPage() {
             <Button onClick={handlePreview} disabled={previewLoading || !bothSaved}>
               {previewLoading ? 'Rendering…' : 'Preview exact printed postcard'}
             </Button>
-            {!bothSaved && (
-              <span className="text-xs text-slate-500">Save a front and a back design to render the proof.</span>
-            )}
+            {!bothSaved && <span className="text-xs text-slate-500">Save a front and a back design to render the proof.</span>}
           </div>
           {previewUrl && (
             <div className="space-y-2">
@@ -719,9 +736,9 @@ export default function PostcardDesignPage() {
       <Card className="border-slate-100 bg-slate-50">
         <CardContent className="pt-4">
           <p className="text-sm text-slate-600">
-            <strong>Tip:</strong> For the sharpest print, design at 300 DPI and {TARGET_PX.w}×{TARGET_PX.h}px
-            (154×111mm — A6 plus 3mm bleed on every edge). Keep important text and logos at least {CARD.safe}mm inside
-            the cut. On the back, keep your message and logo in the left half — Stannp prints the address over the right half. Only the first page of the PDF is used.
+            <strong>Tip:</strong> Design at 300 DPI with 3mm bleed. The front is a full landscape card
+            ({TARGET_PX.w}×{TARGET_PX.h}px); the back design is portrait and goes on the left half
+            ({HALF_PX_W}×{TARGET_PX.h}px) — keep text {CARD.safe}mm inside the cut. Only the first page of the PDF is used.
           </p>
         </CardContent>
       </Card>
