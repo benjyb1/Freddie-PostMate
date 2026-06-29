@@ -1,6 +1,6 @@
 # Housepost
 
-Automated UK property lead generation from HM Land Registry data with PostGrid postcard dispatch. Built with Next.js 16, Supabase, Stripe, and PostGrid.
+Automated UK property lead generation from HM Land Registry data with Stannp postcard dispatch. Built with Next.js 16, Supabase, Stripe, and Stannp.
 
 ## How it works
 
@@ -18,7 +18,7 @@ Automated UK property lead generation from HM Land Registry data with PostGrid p
 | Database | Supabase (PostgreSQL + Auth + RLS) |
 | Scheduling | Vercel Cron Jobs |
 | Payments | Stripe (subscriptions + one-off charges) |
-| Postcards | PostGrid API |
+| Postcards | Stannp API (A6, Royal Mail) |
 | Geocoding | Postcodes.io (free UK API) |
 | Email | Resend |
 | UI | Tailwind CSS v4 + shadcn/ui |
@@ -31,7 +31,7 @@ Automated UK property lead generation from HM Land Registry data with PostGrid p
 - Node.js 20+
 - [Supabase](https://supabase.com) project
 - [Stripe](https://stripe.com) account
-- [PostGrid](https://postgrid.com) account
+- [Stannp](https://www.stannp.com) account
 - [Resend](https://resend.com) account
 - [Vercel](https://vercel.com) **Pro** plan (for 300s cron functions)
 
@@ -62,8 +62,8 @@ Fill in all values:
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Stripe → Developers → API keys |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Webhooks → your endpoint |
 | `STRIPE_PRICE_ID` | Create a £10/month recurring price in Stripe → Products |
-| `POSTGRID_API_KEY` | PostGrid → API Keys (use test_sk_... for dev) |
-| `POSTGRID_SENDER_*` | Your business return address |
+| `STANNP_API_KEY` | Stannp → Settings → API (drives live dispatch + the test-mode proof) |
+| `STANNP_RETURN_ADDRESS` | Optional single-line return address (defaults to your Stannp account address) |
 | `RESEND_API_KEY` | Resend → API Keys |
 | `RESEND_FROM_EMAIL` | Verified sender in Resend |
 | `ADMIN_PASSWORD` | Any secure string you choose |

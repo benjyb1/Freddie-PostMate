@@ -211,7 +211,7 @@ export default function HomePage() {
               { icon: Clock, title: 'Runs by itself', body: 'Fires automatically every month, you just select and send.' },
               { icon: Shield, title: 'Fresh data, every month', body: 'We use the official UK house sales register, updated monthly.' },
               { icon: CheckCircle, title: 'Filter your way', body: 'Sort leads by distance, price, or property type.' },
-              { icon: Mail, title: 'Printed and posted', body: 'Professionally printed by PostGrid and delivered by Royal Mail.' },
+              { icon: Mail, title: 'Printed and posted', body: 'Professionally printed on 300gsm card and delivered by Royal Mail.' },
               { icon: TrendingUp, title: 'Live tracking', body: 'Keep an eye on every postcard, from printer to postbox.' },
             ].map(({ icon: Icon, title, body }) => (
               <div key={title} className="flex gap-4 p-6 rounded-xl border border-slate-100 hover:border-brand-border hover:bg-brand-light/30 transition-colors">

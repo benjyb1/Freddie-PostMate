@@ -51,7 +51,7 @@ export function SiteFooter({ variant = 'public' }: { variant?: 'public' | 'porta
               between the two stacked sections. */}
           <div className="hidden h-10 sm:block" aria-hidden="true" />
           <p className="text-xs text-slate-400">
-            Data sourced from HM Land Registry &middot; Printed by PostGrid
+            Data sourced from HM Land Registry &middot; Printed and posted via Royal Mail
           </p>
           <div className="flex flex-col gap-1 text-sm text-slate-500 sm:items-end">
             <Link href="/privacy" className="hover:text-slate-700 transition-colors">Privacy policy</Link>

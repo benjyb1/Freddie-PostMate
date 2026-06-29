@@ -58,13 +58,13 @@ This handles all subscription billing.
 
 ---
 
-### 5. PostGrid (postcard printing)
-This prints and posts the physical postcards.
+### 5. Stannp (postcard printing)
+This prints and posts the physical A6 postcards via Royal Mail.
 
 **Steps:**
-1. New owner creates a PostGrid account at [postgrid.com](https://postgrid.com)
-2. Get new API keys from the PostGrid dashboard
-3. Update `POSTGRID_API_KEY` in Vercel environment variables
+1. New owner creates a Stannp account at [stannp.com](https://www.stannp.com)
+2. Get the API key from the Stannp dashboard → Settings → API
+3. Update `STANNP_API_KEY` in Vercel environment variables (optionally set `STANNP_RETURN_ADDRESS`)
 
 ---
 
@@ -102,7 +102,7 @@ Once all accounts are set up, add these in **Project → Settings → Environmen
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Stripe → Developers → API keys |
 | `STRIPE_WEBHOOK_SECRET` | Stripe → Developers → Webhooks → your endpoint |
 | `STRIPE_PRICE_ID` | Stripe → Products → your subscription product |
-| `POSTGRID_API_KEY` | PostGrid → Dashboard → API keys |
+| `STANNP_API_KEY` | Stannp → Settings → API |
 | `RESEND_API_KEY` | Resend → API Keys |
 | `RESEND_FROM_EMAIL` | Your verified sender email |
 | `ADMIN_PASSWORD` | Set a new secure password |
@@ -132,7 +132,7 @@ After transferring GitHub, add the same secrets at:
 - [ ] Vercel project deployed from transferred GitHub repo and environment variables added
 - [ ] Supabase ownership transferred
 - [ ] Stripe account set up and keys updated
-- [ ] PostGrid account set up and keys updated
+- [ ] Stannp account set up and key updated
 - [ ] Resend account set up and keys updated
 - [ ] Domain transferred and DNS pointing to new Vercel account
 - [ ] GitHub Actions secrets updated
