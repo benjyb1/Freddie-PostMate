@@ -1,38 +1,30 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import {
-  createPostcardPreview,
-  buildRecipientContact,
-  generateFrontHtml,
-  generateBackHtml,
-} from '@/lib/postcards/postgrid'
+import { createPostcardPreview, buildRecipient } from '@/lib/postcards/stannp'
 
 /**
  * POST: render an exact print proof of the user's current postcard design.
  *
- * This goes through PostGrid's TEST sandbox, so nothing is printed, posted or
- * charged — it just returns the same PDF the printer would produce. We feed it a
- * sample recipient and a sample recent-sale so the back reads realistically;
- * none of it is a real lead and nothing is written to the database.
+ * This runs through Stannp's test mode, so nothing is printed, posted or charged
+ * — it returns the same print-ready PDF a live order would produce, against a
+ * sample recipient so the address area reads realistically. Nothing is written
+ * to the database.
  */
 export async function POST() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  if (!process.env.POSTGRID_TEST_API_KEY) {
+  if (!process.env.STANNP_API_KEY) {
     return NextResponse.json(
-      {
-        error:
-          'Preview is not configured yet. Add your PostGrid test key as POSTGRID_TEST_API_KEY.',
-      },
+      { error: 'Preview is not configured yet. Add your Stannp key as STANNP_API_KEY.' },
       { status: 503 }
     )
   }
 
   const { data: profile, error } = await supabase
     .from('profiles')
-    .select('full_name, postcard_design_url, postcard_design_back_url')
+    .select('postcard_design_url, postcard_design_back_url')
     .eq('id', user.id)
     .single()
 
@@ -40,32 +32,21 @@ export async function POST() {
     return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
   }
 
-  const senderName = (profile.full_name as string | null) ?? 'Housepost'
+  const frontUrl = profile.postcard_design_url as string | null
+  const backUrl = profile.postcard_design_back_url as string | null
+  if (!frontUrl || !backUrl) {
+    return NextResponse.json(
+      { error: 'Upload a front and back design first, then preview the exact printed card.' },
+      { status: 400 }
+    )
+  }
 
-  const frontHtml = generateFrontHtml({
-    senderName,
-    designUrl: profile.postcard_design_url as string | null,
-  })
-
-  // Sample sale details so the default back template renders the way a real
-  // dispatch would. These are illustrative only.
-  const backHtml = generateBackHtml({
-    recipientAddress: '12 Sample Street, Aylesbury',
-    price: 42_500_000, // pence — generateBackHtml divides by 100 → £425,000
-    propertyType: 'Detached house',
-    saleDate: '1 May 2026',
-    senderName,
-    backDesignUrl: profile.postcard_design_back_url as string | null,
-  })
-
-  const recipient = buildRecipientContact(
-    '12 Sample Street, Aylesbury',
-    'HP20 1AB',
-    'Sample Resident'
-  )
+  // Sample recipient so Stannp's address clear zone renders the way a real
+  // dispatch would. Illustrative only — not a real lead.
+  const recipient = buildRecipient('12 Sample Street, Aylesbury', 'HP20 1AB', 'Sample Resident')
 
   try {
-    const { url } = await createPostcardPreview(recipient, frontHtml, backHtml, '6x4')
+    const { url } = await createPostcardPreview({ to: recipient, frontUrl, backUrl })
     return NextResponse.json({ url })
   } catch (err) {
     return NextResponse.json(

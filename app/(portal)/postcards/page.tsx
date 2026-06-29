@@ -12,22 +12,24 @@ const statusColors: Record<string, string> = {
   pending: 'bg-slate-100 text-slate-600',
   failed: 'bg-red-100 text-red-800',
   cancelled: 'bg-slate-100 text-slate-400',
-  // PostGrid statuses
-  ready: 'bg-yellow-100 text-yellow-800',
-  printing: 'bg-orange-100 text-orange-800',
-  mailed: 'bg-blue-100 text-blue-800',
-  in_transit: 'bg-purple-100 text-purple-800',
-  delivered: 'bg-green-100 text-green-800',
+  // Stannp statuses
+  received: 'bg-yellow-100 text-yellow-800',
+  processing: 'bg-yellow-100 text-yellow-800',
+  production: 'bg-orange-100 text-orange-800',
+  printed: 'bg-orange-100 text-orange-800',
+  held: 'bg-purple-100 text-purple-800',
+  error: 'bg-red-100 text-red-800',
 }
 
-/** Map PostGrid's internal status names to user-friendly labels */
+/** Map Stannp's internal status names to user-friendly labels */
 const statusLabels: Record<string, string> = {
-  ready: 'Processing',
-  printing: 'Printing',
-  mailed: 'Mailed',
-  in_transit: 'In Transit',
-  delivered: 'Delivered',
+  received: 'Received',
+  processing: 'Processing',
+  production: 'Printing',
+  printed: 'Printed',
   dispatched: 'Dispatched',
+  held: 'On hold',
+  error: 'Error',
   pending: 'Pending',
   failed: 'Failed',
   cancelled: 'Cancelled',

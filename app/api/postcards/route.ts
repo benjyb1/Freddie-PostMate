@@ -3,9 +3,8 @@ import { createHash } from 'crypto'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { calculatePostcardCost, billPendingOverage } from '@/lib/stripe/billing'
-import { sendPostcard, buildRecipientContact, generateFrontHtml, generateBackHtml } from '@/lib/postcards/postgrid'
-import { currentMonthKey, formatDate } from '@/lib/utils/date'
-import { PROPERTY_TYPE_LABELS } from '@/types/land-registry'
+import { sendPostcard, buildRecipient } from '@/lib/postcards/stannp'
+import { currentMonthKey } from '@/lib/utils/date'
 import { INCLUDED_POSTCARDS_PER_MONTH, POSTCARD_OVERAGE_PENCE } from '@/types/profile'
 
 // GET: list postcard jobs for the authenticated user
@@ -56,6 +55,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Active subscription required' }, { status: 403 })
   }
 
+  // Stannp prints whatever artwork we hand it, so both sides must exist before we
+  // post anything — no generic fallback card goes out under the user's name.
+  const frontUrl = profile.postcard_design_url as string | null
+  const backUrl = profile.postcard_design_back_url as string | null
+  if (!frontUrl || !backUrl) {
+    return NextResponse.json(
+      { error: 'Add a front and back postcard design before sending. Open Postcard Design to upload them.' },
+      { status: 400 }
+    )
+  }
+
   // Fetch the selected leads. Exclude any that already have a postcard job —
   // this is the guard against a double-submit dispatching (and billing) twice.
   const { data: leads, error: leadsError } = await supabase
@@ -84,7 +94,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'No Stripe customer found' }, { status: 403 })
   }
 
-  // Dispatch postcards via PostGrid and insert job records
+  // Dispatch postcards via Stannp and insert job records
   const adminSupabase = createAdminClient()
   const dispatched: { leadId: string; jobId: string; isOverage: boolean }[] = []
   const failed: string[] = []
@@ -134,28 +144,11 @@ export async function POST(request: Request) {
         continue
       }
 
-      // 3. We own the lead — print and post. The idempotency key is deterministic
-      //    per (user, lead, batch), so even a retry that somehow got this far
-      //    can't make PostGrid produce a second physical card.
-      const propertyLabel = lead.property_type
-        ? (PROPERTY_TYPE_LABELS[(lead.property_type as keyof typeof PROPERTY_TYPE_LABELS)] ?? lead.property_type)
-        : null
-
-      const frontHtml = generateFrontHtml({
-        senderName: profile.full_name as string,
-        designUrl: profile.postcard_design_url as string | null,
-      })
-
-      const backHtml = generateBackHtml({
-        recipientAddress: lead.address_line as string,
-        price: lead.price as number | null,
-        propertyType: propertyLabel,
-        saleDate: lead.date_of_transfer ? formatDate(lead.date_of_transfer as string) : null,
-        senderName: profile.full_name as string,
-        backDesignUrl: profile.postcard_design_back_url as string | null,
-      })
-
-      const recipient = buildRecipientContact(
+      // 3. We own the lead — print and post. The atomic lead claim above is the
+      //    real double-send guard (Stannp has no idempotency-key header); we still
+      //    tag the order with a deterministic per-(user, lead, batch) hash so a
+      //    duplicate is traceable in the Stannp dashboard.
+      const recipient = buildRecipient(
         lead.address_line as string,
         lead.postcode as string
       )
@@ -165,7 +158,12 @@ export async function POST(request: Request) {
         .digest('hex')
         .slice(0, 40)
 
-      const { postcardId, status } = await sendPostcard(recipient, frontHtml, backHtml, '6x4', idempotencyKey)
+      const { id: postcardId, status } = await sendPostcard({
+        to: recipient,
+        frontUrl,
+        backUrl,
+        tag: idempotencyKey,
+      })
 
       // Only now that the card is actually going out do we decide whether it's
       // an included or an overage card, based on how many have dispatched so far.
@@ -184,7 +182,7 @@ export async function POST(request: Request) {
       dispatched.push({ leadId: lead.id as string, jobId, isOverage: !isIncluded })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      console.error(`PostGrid dispatch failed for lead ${lead.id}:`, msg)
+      console.error(`Stannp dispatch failed for lead ${lead.id}:`, msg)
       // Release the lead and mark the pending job failed so the lead becomes
       // eligible to retry rather than being stuck "dispatched".
       if (jobId) {
