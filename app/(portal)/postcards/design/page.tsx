@@ -302,31 +302,52 @@ export default function PostcardDesignPage() {
 
     try {
       const arrayBuffer = await file.arrayBuffer()
-      const pdfjsLib = await import('pdfjs-dist')
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
 
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      const page = await pdf.getPage(1)
+      const renderPdf = async () => {
+        const pdfjsLib = await import('pdfjs-dist')
+        // Served from our own origin (copied into /public at build time by
+        // scripts/copy-pdf-worker.mjs), so there's no third-party CDN to fail.
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
-      // Render at ~400 DPI so the cropped print is sharp with headroom above
-      // Stannp's 300 DPI. pdf.js scale 1 ≈ 72 DPI, so 400 DPI needs scale ≈ 5.56.
-      // Cap the long edge so an oversized PDF doesn't blow up the canvas/upload —
-      // 6.06" (154mm) at 400 DPI is ~2425px, well under the cap.
-      const base = page.getViewport({ scale: 1 })
-      const MAX_EDGE = 3200
-      let scale = 400 / 72
-      const longEdge = Math.max(base.width, base.height) * scale
-      if (longEdge > MAX_EDGE) scale = MAX_EDGE / Math.max(base.width, base.height)
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+        const page = await pdf.getPage(1)
 
-      const viewport = page.getViewport({ scale })
-      const canvas = document.createElement('canvas')
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+        // Render at ~400 DPI so the cropped print is sharp with headroom above
+        // Stannp's 300 DPI. pdf.js scale 1 ≈ 72 DPI, so 400 DPI needs scale ≈ 5.56.
+        // Cap the long edge so an oversized PDF doesn't blow up the canvas/upload —
+        // 6.06" (154mm) at 400 DPI is ~2425px, well under the cap.
+        const base = page.getViewport({ scale: 1 })
+        const MAX_EDGE = 3200
+        let scale = 400 / 72
+        const longEdge = Math.max(base.width, base.height) * scale
+        if (longEdge > MAX_EDGE) scale = MAX_EDGE / Math.max(base.width, base.height)
 
-      await page.render({ canvas, viewport }).promise
-      setImageSrc(canvas.toDataURL('image/png'))
-    } catch {
-      toast.error('Failed to render PDF – make sure it is a valid PDF file')
+        const viewport = page.getViewport({ scale })
+        const canvas = document.createElement('canvas')
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+
+        await page.render({ canvas, viewport }).promise
+        return canvas.toDataURL('image/png')
+      }
+
+      // The pdf.js worker loads from a CDN; if it ever fails or the network
+      // stalls, getDocument() never resolves. Race a timeout so the uploader
+      // surfaces an error instead of sitting on "Rendering…" forever.
+      const dataUrl = await Promise.race([
+        renderPdf(),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('PDF render timed out')), 25_000)
+        ),
+      ])
+      setImageSrc(dataUrl)
+    } catch (err) {
+      const timedOut = err instanceof Error && err.message === 'PDF render timed out'
+      toast.error(
+        timedOut
+          ? 'That PDF took too long to render — check your connection and try again.'
+          : 'Failed to render PDF — make sure it is a valid PDF file.'
+      )
     } finally {
       setRendering(false)
       // Reset the input so the same file can be re-selected
