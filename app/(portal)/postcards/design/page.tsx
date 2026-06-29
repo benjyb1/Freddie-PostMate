@@ -17,8 +17,8 @@ import { createClient } from '@/lib/supabase/client'
 const CARD = {
   trimW: 148, // mm
   trimH: 105,
-  bleed: 3, // trimmed off every edge
-  safe: 5, // keep text/logos at least this far inside the trim
+  bleed: 3, // trimmed off every edge (154×111mm artwork → 148×105mm trim)
+  safe: 3, // Stannp's A6 safe zone is 142×99mm, i.e. 3mm inside the trim
 }
 const DOC_W = CARD.trimW + CARD.bleed * 2 // 154mm — full artwork width incl. bleed
 const DOC_H = CARD.trimH + CARD.bleed * 2 // 111mm
@@ -28,11 +28,12 @@ const DOC_H = CARD.trimH + CARD.bleed * 2 // 111mm
 const ASPECT_BLEED = DOC_W / DOC_H // 154 / 111
 const ASPECT_TRIM = CARD.trimW / CARD.trimH // 148 / 105
 
-// The address clear zone on the back, in mm measured from the TRIM edges. Stannp
-// drops the recipient address + postal barcode here over a white panel, so the
-// design must keep this area clear. The exact box is whatever the Stannp proof
-// shows; this is a close, honest representation (bottom-right of the back).
-const CLEAR = { w: 85, h: 40, right: 9, bottom: 9 } // mm
+// On the back, Stannp prints the postage, recipient address and barcode over a
+// white panel covering the RIGHT HALF of the card, full height — measured from a
+// live proof: the panel starts dead on the card's centre line (77mm of 154mm)
+// and runs to all three outer edges. So the usable design area is the LEFT half;
+// keep the message and logo there. clearzone=true whites this half out, so any
+// artwork under it won't show.
 
 // Stannp prints at 300 DPI. Below that an A6 card starts to look soft, so warn
 // before the customer commits a design that'll print blurry.
@@ -86,22 +87,23 @@ function SafeGuide({ x, y }: { x: number; y: number }) {
   )
 }
 
-/** Amber hatched box marking where Stannp prints the address over a white panel. */
-function ClearZoneGuide({ insets }: { insets: { left: number; right: number; top: number; bottom: number } }) {
+/**
+ * Amber hatched panel marking the right half of the back, where Stannp prints
+ * the postage, address and barcode over white. `left` is the panel's left edge
+ * as a % of the frame (the card centre line); it runs to the other three edges.
+ */
+function ClearZoneGuide({ left }: { left: number }) {
   return (
     <div
-      className="pointer-events-none absolute flex items-end justify-start rounded-[1px] border border-dashed border-amber-500"
+      className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-center border-l border-dashed border-amber-500"
       style={{
-        left: `${insets.left}%`,
-        right: `${insets.right}%`,
-        top: `${insets.top}%`,
-        bottom: `${insets.bottom}%`,
+        left: `${left}%`,
         background:
-          'repeating-linear-gradient(45deg, rgba(245,158,11,0.14) 0, rgba(245,158,11,0.14) 6px, transparent 6px, transparent 12px)',
+          'repeating-linear-gradient(45deg, rgba(245,158,11,0.16) 0, rgba(245,158,11,0.16) 7px, transparent 7px, transparent 14px)',
       }}
     >
-      <span className="m-1 rounded bg-amber-500/90 px-1 py-0.5 text-[8px] font-medium uppercase leading-none tracking-wide text-white">
-        Address area
+      <span className="rounded bg-amber-500/90 px-1.5 py-0.5 text-center text-[8px] font-medium uppercase leading-tight tracking-wide text-white">
+        Address &amp; postage<br />printed here
       </span>
     </div>
   )
@@ -112,18 +114,14 @@ function GuideOverlay({ side, addBleed, showSafe = true }: { side: Side; addBlee
   const g = geom(addBleed)
   const cut = { x: pct(g.trimOff, g.frameW), y: pct(g.trimOff, g.frameH) }
   const safe = { x: pct(g.trimOff + CARD.safe, g.frameW), y: pct(g.trimOff + CARD.safe, g.frameH) }
-  const clear = {
-    left: pct(g.trimOff + (CARD.trimW - CLEAR.right - CLEAR.w), g.frameW),
-    right: pct(g.trimOff + CLEAR.right, g.frameW),
-    top: pct(g.trimOff + (CARD.trimH - CLEAR.bottom - CLEAR.h), g.frameH),
-    bottom: pct(g.trimOff + CLEAR.bottom, g.frameH),
-  }
+  // The address panel starts at the card's centre line (= 50% in either frame).
+  const addressLeft = pct(g.trimOff + CARD.trimW / 2, g.frameW)
   return (
     <>
       {/* In add-bleed mode the frame edge IS the cut, so only show the safe line. */}
       {!addBleed && <CutGuide x={cut.x} y={cut.y} />}
       {showSafe && <SafeGuide x={safe.x} y={safe.y} />}
-      {side === 'back' && <ClearZoneGuide insets={clear} />}
+      {side === 'back' && <ClearZoneGuide left={addressLeft} />}
     </>
   )
 }
@@ -304,31 +302,52 @@ export default function PostcardDesignPage() {
 
     try {
       const arrayBuffer = await file.arrayBuffer()
-      const pdfjsLib = await import('pdfjs-dist')
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
 
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      const page = await pdf.getPage(1)
+      const renderPdf = async () => {
+        const pdfjsLib = await import('pdfjs-dist')
+        // Served from our own origin (copied into /public at build time by
+        // scripts/copy-pdf-worker.mjs), so there's no third-party CDN to fail.
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
-      // Render at ~400 DPI so the cropped print is sharp with headroom above
-      // Stannp's 300 DPI. pdf.js scale 1 ≈ 72 DPI, so 400 DPI needs scale ≈ 5.56.
-      // Cap the long edge so an oversized PDF doesn't blow up the canvas/upload —
-      // 6.06" (154mm) at 400 DPI is ~2425px, well under the cap.
-      const base = page.getViewport({ scale: 1 })
-      const MAX_EDGE = 3200
-      let scale = 400 / 72
-      const longEdge = Math.max(base.width, base.height) * scale
-      if (longEdge > MAX_EDGE) scale = MAX_EDGE / Math.max(base.width, base.height)
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+        const page = await pdf.getPage(1)
 
-      const viewport = page.getViewport({ scale })
-      const canvas = document.createElement('canvas')
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+        // Render at ~400 DPI so the cropped print is sharp with headroom above
+        // Stannp's 300 DPI. pdf.js scale 1 ≈ 72 DPI, so 400 DPI needs scale ≈ 5.56.
+        // Cap the long edge so an oversized PDF doesn't blow up the canvas/upload —
+        // 6.06" (154mm) at 400 DPI is ~2425px, well under the cap.
+        const base = page.getViewport({ scale: 1 })
+        const MAX_EDGE = 3200
+        let scale = 400 / 72
+        const longEdge = Math.max(base.width, base.height) * scale
+        if (longEdge > MAX_EDGE) scale = MAX_EDGE / Math.max(base.width, base.height)
 
-      await page.render({ canvas, viewport }).promise
-      setImageSrc(canvas.toDataURL('image/png'))
-    } catch {
-      toast.error('Failed to render PDF – make sure it is a valid PDF file')
+        const viewport = page.getViewport({ scale })
+        const canvas = document.createElement('canvas')
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+
+        await page.render({ canvas, viewport }).promise
+        return canvas.toDataURL('image/png')
+      }
+
+      // The pdf.js worker loads from a CDN; if it ever fails or the network
+      // stalls, getDocument() never resolves. Race a timeout so the uploader
+      // surfaces an error instead of sitting on "Rendering…" forever.
+      const dataUrl = await Promise.race([
+        renderPdf(),
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('PDF render timed out')), 25_000)
+        ),
+      ])
+      setImageSrc(dataUrl)
+    } catch (err) {
+      const timedOut = err instanceof Error && err.message === 'PDF render timed out'
+      toast.error(
+        timedOut
+          ? 'That PDF took too long to render — check your connection and try again.'
+          : 'Failed to render PDF — make sure it is a valid PDF file.'
+      )
     } finally {
       setRendering(false)
       // Reset the input so the same file can be re-selected
@@ -485,7 +504,7 @@ export default function PostcardDesignPage() {
               <CardTitle>{config.label} Design</CardTitle>
               <CardDescription>
                 Red dashed line is the cut; anything outside it is trimmed off.
-                {!isFront && ' The amber box is where Stannp prints the address.'}
+                {!isFront && ' The amber right half is where Stannp prints the address.'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -517,7 +536,7 @@ export default function PostcardDesignPage() {
             <CardDescription>
               {isFront
                 ? 'The front is your full design, edge to edge.'
-                : 'The back is your full design. Stannp prints the recipient address over the amber area, so keep that clear.'}
+                : 'Design the full card, but keep your message and logo in the LEFT half — Stannp prints the address over the amber right half, covered by a white panel.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -621,7 +640,7 @@ export default function PostcardDesignPage() {
                       {addBleed
                         ? 'Blue line is the safe zone — keep text and logos inside it.'
                         : 'Red line is the cut. Let the background run to the outer edge; keep text inside the blue safe line.'}
-                      {!isFront && ' Keep the amber area clear — Stannp prints the address there.'}
+                      {!isFront && ' Keep your content in the left half — the amber right half becomes the address panel.'}
                     </p>
 
                     {/* Low-resolution warning */}
@@ -702,7 +721,7 @@ export default function PostcardDesignPage() {
           <p className="text-sm text-slate-600">
             <strong>Tip:</strong> For the sharpest print, design at 300 DPI and {TARGET_PX.w}×{TARGET_PX.h}px
             (154×111mm — A6 plus 3mm bleed on every edge). Keep important text and logos at least {CARD.safe}mm inside
-            the cut, and the back&apos;s address area clear. Only the first page of the PDF is used.
+            the cut. On the back, keep your message and logo in the left half — Stannp prints the address over the right half. Only the first page of the PDF is used.
           </p>
         </CardContent>
       </Card>
