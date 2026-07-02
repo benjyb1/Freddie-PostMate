@@ -1,12 +1,19 @@
 # Housepost
 
-Automated UK property lead generation from HM Land Registry data with Stannp postcard dispatch. Built with Next.js 16, Supabase, Stripe, and Stannp.
+Automated UK property lead generation from HM Land Registry data with Stannp postcard dispatch. Built with Next.js 16, Supabase, Stripe, and Stannp. Solo-built end to end: schema, cron pipeline, billing, and the admin panel.
 
 ## How it works
 
-1. **21st of each month** (deferred to Monday if weekend): downloads the Land Registry monthly CSV, parses it, filters to standard sales (category A), stores results in the database.
+1. **21st of each month** (deferred to Monday if weekend): streams the 100MB+ Land Registry monthly CSV straight from the download response into the parser — never buffers the whole file — filters to standard sales (category A), and batch-upserts into the database.
 2. **22nd of each month**: generates leads for each active subscriber — querying properties within their office radius, auto-expanding by 5-mile steps (up to 50 miles) until 15+ leads are found. A notification email is sent.
-3. **Clients** log in, review leads, select properties, and confirm postcard dispatch. The first 10/month are included in the £10/month subscription; additional postcards cost £1 each via Stripe.
+3. **Clients** log in, review leads, select properties, and confirm postcard dispatch. The first 5/month are included in the £10/month subscription; additional postcards cost £1.50 each via Stripe.
+
+## Engineering details worth a second look
+
+- **Race-safe lead claiming.** Postcard dispatch uses a two-phase commit: create a pending job row, then atomically claim leads with `UPDATE ... WHERE postcard_job_id IS NULL`. Two concurrent submits can't double-claim the same lead — the loser gets zero rows back, no application-level locking needed.
+- **Idempotent by default.** Every Stannp order carries a SHA-256 tag (`postcard:{userId}:{leadId}:{month}`) for manual traceability, and a partial unique index on `dispatch_idempotency_key` stops a retried resend from creating a duplicate billable job.
+- **Billing follows success, not intent.** A postcard is only marked included/overage after Stannp confirms dispatch, not when the send loop starts — a failed dispatch can't wrongly push someone else's postcard into overage.
+- **Land Registry imports are idempotent too.** A unique constraint on `(transaction_id, import_month)` means re-running an import (say, after a partial failure) never duplicates rows.
 
 ---
 
